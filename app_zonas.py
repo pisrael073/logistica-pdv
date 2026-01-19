@@ -81,8 +81,11 @@ def ordenar_ruta_desde_bodega(df_grupo):
 @st.cache_data(ttl=600)
 def cargar_datos_master():
     try:
-        # Conexión a Google Sheets
-        gc = gspread.service_account(filename='credenciales.json')
+        # --- AQUÍ ESTÁ EL CAMBIO IMPORTANTE ---
+        # Conexión usando Secrets (Nube)
+        credenciales = dict(st.secrets["gcp_service_account"])
+        gc = gspread.service_account_from_dict(credenciales)
+        
         sh = gc.open("soluto")
         
         # Leer CLIENTES_MASTER
