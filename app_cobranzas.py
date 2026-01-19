@@ -5,10 +5,11 @@ import plotly.graph_objects as go
 import numpy as np
 from sklearn.cluster import KMeans
 from scipy.spatial.distance import cdist
+from scipy.spatial import ConvexHull
 from math import radians, cos, sin, asin, sqrt
 
 # --- CONFIGURACIÓN ---
-st.set_page_config(page_title="Ruta Táctica de Cobranza (GPS)", layout="wide", page_icon="🕵️‍♂️")
+st.set_page_config(page_title="Ruta Táctica de Cobranza (Visual)", layout="wide", page_icon="🕵️‍♂️")
 
 # Coordenada Base (Ambato)
 BODEGA_AMBATO = np.array([[-1.241667, -78.619722]])
@@ -77,7 +78,7 @@ def cargar_datos_fusionados():
         # Cruce
         df_final = pd.merge(df_cartera, df_master, on='ID_CRUCE', how='left')
         
-        # Filtros estrictos: Debe tener deuda y DEBE TENER GPS
+        # Filtros estrictos
         df_final = df_final[df_final['Saldo'] > 1]
         df_final = df_final.dropna(subset=['Latitud', 'Longitud'])
         df_final = df_final[(df_final['Latitud'] != 0) & (df_final['Longitud'] != 0)]
@@ -95,29 +96,26 @@ def cargar_datos_fusionados():
         return pd.DataFrame()
 
 # --- INTERFAZ ---
-st.title("🚔 Ruta Táctica de Cobranza (GPS Puro)")
-st.markdown("Zonificación automática basada en coordenadas reales.")
+st.title("🚔 Ruta Táctica de Cobranza (GPS Visual)")
+st.markdown("Territorio zonificado automáticamente por IA.")
 
 df = cargar_datos_fusionados()
 
 if not df.empty:
     st.sidebar.header("📍 Configuración de Misión")
     
-    # 1. ZONIFICACIÓN IA (Reemplaza al filtro de Ciudad)
-    # El usuario decide en cuántas zonas dividir la cartera
-    num_zonas = st.sidebar.slider("¿En cuántas zonas dividir la cobranza?", 2, 20, 5)
+    # 1. ZONIFICACIÓN IA
+    num_zonas = st.sidebar.slider("Zonas de Cobranza (IA)", 2, 20, 5)
     monto_min = st.sidebar.number_input("Monto Mínimo a gestionar ($)", value=10)
 
-    # Procesamiento Clustering (IA)
+    # Procesamiento Clustering
     kmeans = KMeans(n_clusters=num_zonas, random_state=42, n_init=10)
     df['Zona_IA'] = kmeans.fit_predict(df[['Latitud', 'Longitud']])
-    
-    # Convertir zona numérica a texto amigable "Zona 1", "Zona 2"
     df['Nombre_Zona'] = "Zona Geográfica " + (df['Zona_IA'] + 1).astype(str)
     
     # 2. SELECCIÓN DE ZONA
     zonas_disponibles = sorted(df['Nombre_Zona'].unique())
-    seleccion_zona = st.sidebar.selectbox("Seleccionar Zona de Operación:", zonas_disponibles)
+    seleccion_zona = st.sidebar.selectbox("Seleccionar Territorio:", zonas_disponibles)
     
     # Filtrar datos
     df_ruta = df[
@@ -133,50 +131,72 @@ if not df.empty:
         # KPIS
         total_recuperar = df_optimizada['Saldo'].sum()
         c1, c2, c3 = st.columns(3)
-        c1.metric("💰 Cartera en Zona", f"${total_recuperar:,.2f}")
+        c1.metric("💰 Cartera en Territorio", f"${total_recuperar:,.2f}")
         c2.metric("📍 Puntos a Visitar", len(df_optimizada))
         c3.metric("🚨 Deuda Máxima", f"${df_optimizada['Saldo'].max():,.2f}")
 
-        # MAPA
+        # --- MAPA VISUAL ---
         lat_c = df_optimizada['Latitud'].mean()
         lon_c = df_optimizada['Longitud'].mean()
 
         fig = go.Figure()
 
-        # Línea de Ruta
+        # 1. SOMBREADO DE ZONA (CONVEX HULL) - ¡LO NUEVO!
+        # Si hay más de 2 puntos, creamos un polígono que encierra el área
+        if len(df_optimizada) >= 3:
+            try:
+                points = df_optimizada[['Latitud', 'Longitud']].values
+                hull = ConvexHull(points)
+                hull_points = points[hull.vertices]
+                # Cerramos el polígono repitiendo el primer punto
+                hull_lat = np.append(hull_points[:,0], hull_points[0,0])
+                hull_lon = np.append(hull_points[:,1], hull_points[0,1])
+                
+                fig.add_trace(go.Scattermapbox(
+                    lat=hull_lat, lon=hull_lon,
+                    mode='lines',
+                    fill='toself',
+                    fillcolor='rgba(0, 100, 255, 0.15)', # Azul transparente
+                    line=dict(width=0),
+                    name='Área de Cobertura'
+                ))
+            except:
+                pass # Si fallan las matemáticas (puntos colineales), solo no dibuja el fondo
+
+        # 2. LÍNEA DE RUTA
         fig.add_trace(go.Scattermapbox(
             lat=df_optimizada['Latitud'], lon=df_optimizada['Longitud'],
             mode='lines',
-            line=dict(width=4, color='blue'),
-            name='Ruta'
+            line=dict(width=3, color='blue'), # Azul sólido para la ruta
+            name='Ruta Óptima'
         ))
 
-        # Puntos
-        colors = df_optimizada['Prioridad'].map({"🔴 JUDICIAL": "red", "🟡 Alerta": "orange", "🟢 Fresca": "green"})
+        # 3. MARCADORES DE CLIENTES
+        colors = df_optimizada['Prioridad'].map({"🔴 JUDICIAL": "#D32F2F", "🟡 Alerta": "#FBC02D", "🟢 Fresca": "#388E3C"})
         
         fig.add_trace(go.Scattermapbox(
             lat=df_optimizada['Latitud'], lon=df_optimizada['Longitud'],
             mode='markers+text',
-            marker=dict(size=14, color=colors, opacity=0.9),
+            marker=dict(size=14, color=colors, opacity=1, symbol='circle'),
             text=df_optimizada['Secuencia'].astype(str),
             textposition='top center',
             textfont=dict(color='black', size=11, family="Arial Black"),
-            hovertext=df_optimizada['Razon Social'] + " | $" + df_optimizada['Saldo'].astype(str),
+            hovertext="<b>" + df_optimizada['Razon Social'] + "</b><br>Deuda: $" + df_optimizada['Saldo'].astype(str),
             name='Clientes'
         ))
 
         fig.update_layout(
             mapbox_style="open-street-map",
-            height=600,
-            title=f"Mapa Táctico: {seleccion_zona}",
+            height=650,
+            title=f"Territorio de Operación: {seleccion_zona}",
             mapbox=dict(center=dict(lat=lat_c, lon=lon_c), zoom=12),
-            margin={"r":0,"t":30,"l":0,"b":0},
-            legend=dict(x=0,y=1, bgcolor='rgba(255,255,255,0.7)')
+            margin={"r":0,"t":40,"l":0,"b":0},
+            legend=dict(x=0,y=1, bgcolor='rgba(255,255,255,0.8)')
         )
         st.plotly_chart(fig, use_container_width=True)
 
-        # TABLA
-        st.subheader("📋 Lista de Trabajo (Secuencia Lógica)")
+        # TABLA DE TRABAJO
+        st.subheader("📋 Secuencia de Visita")
         cols_mostrar = ['Secuencia', 'Razon Social', 'Saldo', 'Dias', 'Prioridad', 'Direccion']
         cols_finales = [c for c in cols_mostrar if c in df_optimizada.columns]
         st.dataframe(df_optimizada[cols_finales], use_container_width=True)
@@ -184,4 +204,4 @@ if not df.empty:
     else:
         st.warning("No hay clientes en esta zona con ese monto de deuda.")
 else:
-    st.info("Conectando y detectando coordenadas...")
+    st.info("Detectando coordenadas de cartera...")
